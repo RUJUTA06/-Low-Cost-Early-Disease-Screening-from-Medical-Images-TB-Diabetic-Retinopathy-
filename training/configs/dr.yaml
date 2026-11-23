@@ -1,0 +1,9 @@
+task: dr_grading
+architecture: torchvision.resnet18
+classes: [no_DR, mild, moderate, severe, proliferative_DR]
+input_size: [224, 224]
+normalization: imagenet-rgb
+checkpoint: backend/models/dr/model.pt
+seed: 42
+patient_level_split_required: true
+pretrained_download: false

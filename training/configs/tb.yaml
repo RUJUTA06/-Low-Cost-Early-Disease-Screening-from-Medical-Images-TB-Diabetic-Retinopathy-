@@ -1,0 +1,10 @@
+task: tb_screening
+architecture: torchvision.densenet121
+classes: [dataset-negative, dataset-positive]
+input_size: [224, 224]
+normalization: imagenet-rgb
+threshold: 0.5
+checkpoint: backend/models/tb/model.pt
+seed: 42
+patient_level_split_required: true
+pretrained_download: false
