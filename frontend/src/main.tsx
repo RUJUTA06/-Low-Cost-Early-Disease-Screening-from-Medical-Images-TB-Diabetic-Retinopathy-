@@ -4,5 +4,6 @@ import App from './App';
 import './tailwind.css';
 import './dialog.css';
 import './style.css';
+import './access.css';
 
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>);

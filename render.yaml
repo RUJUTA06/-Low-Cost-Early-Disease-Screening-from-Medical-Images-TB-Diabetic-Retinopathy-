@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: clarity-screening-research
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile.render
+    dockerContext: .
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: AUTH_REQUIRED
+        value: "true"
+      - key: ACCESS_USERNAME
+        sync: false
+      - key: ACCESS_PASSWORD
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: CORS_ORIGINS
+        value: ""
+      - key: RETAIN_IMAGES
+        value: "false"
+      - key: MODEL_DEVICE
+        value: cpu

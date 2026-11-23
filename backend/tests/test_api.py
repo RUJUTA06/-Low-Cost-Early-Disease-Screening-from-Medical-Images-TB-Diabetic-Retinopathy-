@@ -38,6 +38,16 @@ def test_health_and_model_status(client):
     assert all(not x["ready"] for x in models)
 
 
+def test_protected_host_requires_credentials_for_api_data(client, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "auth_required", True)
+    monkeypatch.setattr(settings, "access_username", "researcher")
+    monkeypatch.setattr(settings, "access_password", "a-strong-test-password-123")
+    assert client.get("/api/health").status_code == 200
+    assert client.get("/api/models").status_code == 401
+    assert client.get("/api/cases", auth=("researcher", "a-strong-test-password-123")).status_code == 200
+
+
 @pytest.mark.parametrize(("path", "task"), [("/api/screen/tb", "tb_screening"), ("/api/screen/dr", "dr_grading")])
 def test_screening_is_indeterminate_without_checkpoint(client, path, task):
     response = client.post(path, files={"file": ("synthetic-not-medical.jpg", image_bytes(), "image/jpeg")})

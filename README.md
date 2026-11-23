@@ -7,7 +7,7 @@ A local-first research and education prototype with two independent medical-imag
 - FastAPI REST backend, React/TypeScript/Vite dashboard, SQLite metadata records, PDF reports, separate model pipelines, training/evaluation scaffolding, Docker Compose, and unit/API tests are included.
 - No dataset, trained checkpoint, or measured evaluation result is included. Both models report `not-configured`; requests abstain instead of returning predictions.
 - Uploaded files are decoded in memory. Medical image bytes are not persisted; only pseudonymous metadata is stored locally.
-- This prototype has no authentication or public deployment hardening. Compose binds the app to local loopback. Do not expose it publicly.
+- Local Compose binds the app to loopback. The optional Render deployment uses a shared access credential and Supabase PostgreSQL; it is intended only for a small private research demo, not clinical or sensitive patient-data use.
 - Quality checks are technical heuristics; they are not validated modality classifiers or clinical image quality tools. DICOM is out of scope.
 
 ## Features
@@ -45,6 +45,8 @@ frontend/src/            React views, API client, styles and UI tests
 training/                Separate TB/DR configs, training and evaluation scripts
 docs/                    Architecture, API, model/dataset cards and governance
 docker-compose.yml       Local frontend/API containers and persistent metadata volume
+render.yaml              Protected Render web-service blueprint
+Dockerfile.render        Single-service hosted UI + API image
 ```
 
 ## Run locally
@@ -114,6 +116,10 @@ Set `TB_CHECKPOINT` and `DR_CHECKPOINT` to those checkpoint paths in the backend
 | GET | `/api/metrics/summary` | Operational counts and stored offline evaluation records |
 | POST | `/api/export/report` | PDF report for `{"case_id":"..."}` |
 
+## Hosted research demo
+
+See [protected Supabase + Render deployment steps](docs/deployment.md). The hosted service uses a shared access password, not individual accounts or role-based access. Never upload identifiable medical images or patient data. Supabase stores pseudonymous case metadata and review notes; image bytes are processed in memory and discarded. Hosting does not add clinical validation or trained models.
+
 ## Tests and build
 
 ```powershell
@@ -131,7 +137,7 @@ Synthetic image fixtures in tests are software fixtures only, not patient data o
 - API upload limits default to 12 MB and 20 million pixels. Allowed raster formats are JPEG, PNG, WebP and BMP.
 - The app does not store source image bytes. SQLite holds random case IDs, task, quality summary, output/abstention, provenance, review and audit metadata.
 - Review notes should never contain patient identifiers. Logs avoid upload names and image bytes.
-- Local prototype only; no user authentication/RBAC. Before hosting: perform a threat model and governance review, add access control, secure transport, rate limiting, appropriate encryption/retention, dependency scanning, monitoring and an incident process.
+- The hosted demo has one shared access password and no individual accounts/RBAC. Before any sensitive-data use: perform a threat model and governance review, add per-user access control, rate limiting, a retention policy, dependency scanning, monitoring and an incident process.
 - Heuristic quality checks may fail to reject the wrong modality and do not certify diagnostic image quality. Human review is mandatory.
 - No performance, latency, subgroup fairness, calibration or clinical effectiveness claims have been measured.
 

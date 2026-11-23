@@ -1,10 +1,15 @@
 import logging
+import base64
+import binascii
+import secrets
 import time
+from pathlib import Path
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
@@ -22,6 +27,8 @@ logger = logging.getLogger("screening")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    if settings.auth_required and (not settings.access_username or len(settings.access_password) < 20):
+        raise RuntimeError("Protected hosting requires ACCESS_USERNAME and an ACCESS_PASSWORD of at least 20 characters.")
     Base.metadata.create_all(bind=engine)
     yield
 
@@ -29,7 +36,26 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title=settings.app_name, version="0.1.0", description=f"{DISCLAIMER} No models or datasets ship with this research prototype.", lifespan=lifespan)
 origins = [x.strip() for x in settings.cors_origins.split(",") if x.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=False,
-                   allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type"])
+                   allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type", "Authorization"])
+
+
+@app.middleware("http")
+async def require_access_credentials(request, call_next):
+    private_api = request.url.path.startswith("/api/") and request.url.path != "/api/health"
+    if settings.auth_required and private_api:
+        header = request.headers.get("authorization", "")
+        try:
+            scheme, encoded = header.split(" ", 1)
+            username, separator, password = base64.b64decode(encoded, validate=True).decode("utf-8").partition(":")
+        except (ValueError, UnicodeDecodeError, binascii.Error):
+            username, password, separator, scheme = "", "", "", ""
+        valid = (scheme.lower() == "basic" and bool(separator)
+                 and secrets.compare_digest(username, settings.access_username)
+                 and secrets.compare_digest(password, settings.access_password))
+        if not valid:
+            return JSONResponse({"detail": "Sign in is required to use this private research app."}, status_code=401,
+                                headers={"WWW-Authenticate": 'Basic realm="Clarity Research", charset="UTF-8"'})
+    return await call_next(request)
 
 
 @app.get("/api/health")
@@ -170,3 +196,8 @@ def export_report(payload: dict, db: Session = Depends(get_db)):
     db.add(AuditRecord(case_id=case_id, action="export", detail={"format": "pdf"}))
     db.commit()
     return Response(make_report(case), media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="screening-{case_id}.pdf"'})
+
+
+static_dir = Path(__file__).with_name("static")
+if static_dir.is_dir():
+    app.mount("/", StaticFiles(directory=static_dir, html=True), name="frontend")

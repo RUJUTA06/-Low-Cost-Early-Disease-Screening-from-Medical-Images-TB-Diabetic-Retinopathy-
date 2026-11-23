@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, ArrowDownToLine, ArrowRight, Bell, BookOpenCheck, Check, ChevronDown, CircleHelp, Clock3, Eye, FileImage, FileText, Filter, HeartPulse, History, Home, Info, Menu, MoreHorizontal, Search, Settings2, ShieldCheck, Stethoscope, UploadCloud, X } from 'lucide-react';
-import type { ReactNode } from 'react';
+import type { FormEvent, ReactNode } from 'react';
 import { api } from './api';
 import type { CaseSummary, ModelInfo, Page, ScreeningResult } from './types';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { accessIsEnabled, clearAccessCredentials, hasAccessCredentials, saveAccessCredentials } from './access';
 
 const safety='Research screening support only. This is not a diagnosis or a disease-free guarantee. Do not delay professional care.';
 const nav:[Page,string,typeof Home][]=[['overview','Overview',Home],['tb','TB chest X-ray',FileImage],['dr','DR fundus',Activity],['cases','Case history',History],['research','Research & models',BookOpenCheck],['settings','Settings',Settings2]];
 
 export default function App(){
+  const [authenticated,setAuthenticated]=useState(()=>!accessIsEnabled()||hasAccessCredentials());
+  if(!authenticated)return <AccessGate onSuccess={()=>setAuthenticated(true)}/>;
   const [page,setPage]=useState<Page>('overview'),[models,setModels]=useState<ModelInfo[]>([]),[cases,setCases]=useState<CaseSummary[]>([]),[health,setHealth]=useState(false),[error,setError]=useState(''),[busy,setBusy]=useState(false),[result,setResult]=useState<ScreeningResult|null>(null),[mobile,setMobile]=useState(false),[query,setQuery]=useState(''),[taskFilter,setTaskFilter]=useState('all'),[reviewFilter,setReviewFilter]=useState('all'),[dateFrom,setDateFrom]=useState(''),[dateTo,setDateTo]=useState('');
   const [detail,setDetail]=useState<Record<string,unknown>|null>(null);
   const refresh=async()=>{try{const [m,c,h]=await Promise.all([api.models(),api.cases(),api.health()]);setModels(m);setCases(c);setHealth(h.status==='ok');}catch{setHealth(false);}};
@@ -29,7 +32,7 @@ export default function App(){
       <div className="sidebar-bottom"><div className="side-status"><span className={`status-dot ${health?'':'off'}`}/><span>API {health?'connected':'unavailable'}</span><small>{models.filter(m=>m.ready).length}/{models.length||2} models ready</small></div><button className="nav-item"><CircleHelp size={17}/><span>Documentation</span><ArrowRight size={14}/></button><div className="profile"><div className="profile-avatar">RS</div><span><b>Research operator</b><small>Local session</small></span><MoreHorizontal size={18}/></div></div>
     </aside>
     {mobile&&<button className="scrim" onClick={()=>setMobile(false)} aria-label="Close menu"/>}
-    <main className="main"><header className="topbar"><button className="icon-button menu-button" aria-label="Open navigation" onClick={()=>setMobile(true)}><Menu size={20}/></button><div className="crumb"><span>Workspace</span><b>/</b>{nav.find(n=>n[0]===page)?.[1]??'Results'}</div><div className="top-actions"><span className="local-chip"><ShieldCheck size={14}/> Local only</span><button className="icon-button" aria-label="Notifications"><Bell size={18}/></button><div className="mini-avatar">RS</div></div></header>
+    <main className="main"><header className="topbar"><button className="icon-button menu-button" aria-label="Open navigation" onClick={()=>setMobile(true)}><Menu size={20}/></button><div className="crumb"><span>Research workspace</span><b>/</b>{nav.find(n=>n[0]===page)?.[1]??'Results'}</div><div className="top-actions"><span className="local-chip"><ShieldCheck size={14}/> Protected research app</span>{accessIsEnabled()&&<button className="text-button" onClick={()=>{clearAccessCredentials();setAuthenticated(false)}}>Sign out</button>}<button className="icon-button" aria-label="Notifications"><Bell size={18}/></button><div className="mini-avatar">RS</div></div></header>
       <div className="content">
         <div className="safety-banner"><div><ShieldCheck size={18}/></div><p><b>Research and education prototype</b><span>{safety}</span></p><Info size={16} className="safety-info"/></div>
         {error&&<div className="error-banner" role="alert"><Info size={16}/>{error}<button onClick={()=>setError('')} aria-label="Dismiss"><X size={16}/></button></div>}
@@ -42,6 +45,12 @@ export default function App(){
       </div>
     </main>
   </div>
+}
+
+function AccessGate({onSuccess}:{onSuccess:()=>void}){
+ const [username,setUsername]=useState(''),[password,setPassword]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+ async function submit(e:FormEvent){e.preventDefault();setBusy(true);setError('');saveAccessCredentials(username,password);try{await api.models();onSuccess();}catch{clearAccessCredentials();setError('Access was not accepted. Check the account name and password, then try again.');}finally{setBusy(false);}}
+ return <main className="access-shell"><form className="access-card" onSubmit={e=>void submit(e)}><div className="brand-mark"><HeartPulse size={20}/></div><span className="eyebrow">PRIVATE RESEARCH DEPLOYMENT</span><h1>Sign in to Clarity</h1><p>This hosted prototype is access protected. Do not upload patient-identifiable images or information.</p><label>Access name<input autoComplete="username" value={username} onChange={e=>setUsername(e.target.value)} required/></label><label>Access password<input type="password" autoComplete="current-password" value={password} onChange={e=>setPassword(e.target.value)} required/></label>{error&&<div className="error-banner" role="alert">{error}</div>}<button className="primary-button full" disabled={busy}>{busy?<><span className="spinner"/> Checking access…</>:'Continue'}</button><div className="guidance-disclaimer">Research and education only. Not a diagnosis or a disease-free guarantee. Do not delay professional care.</div></form></main>;
 }
 
 function PageHeading({eyebrow,title,desc,action}:{eyebrow:string;title:string;desc:string;action?:ReactNode}){return <div className="page-heading"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{desc}</p></div>{action}</div>}

@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     model_device: str = "cpu"
     model_threshold: float = 0.5
     uncertainty_margin: float = 0.08
+    auth_required: bool = False
+    access_username: str = ""
+    access_password: str = ""
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
