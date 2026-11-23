@@ -1,1 +1,0 @@
-# -Low-Cost-Early-Disease-Screening-from-Medical-Images-TB-Diabetic-Retinopathy-
