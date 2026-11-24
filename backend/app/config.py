@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     auth_required: bool = False
     access_username: str = ""
     access_password: str = ""
+    supabase_url: str = ""
+    supabase_publishable_key: str = ""
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
