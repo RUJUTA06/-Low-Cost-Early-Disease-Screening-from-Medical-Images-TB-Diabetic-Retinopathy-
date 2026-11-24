@@ -1,16 +1,14 @@
 import logging
-import base64
-import binascii
-import secrets
 import time
 from pathlib import Path
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import desc, func
+import httpx
+from sqlalchemy import desc, func, inspect, text
 from sqlalchemy.orm import Session
 
 from .config import settings
@@ -27,10 +25,17 @@ logger = logging.getLogger("screening")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    if settings.auth_required and (not settings.access_username or len(settings.access_password) < 20):
-        raise RuntimeError("Protected hosting requires ACCESS_USERNAME and an ACCESS_PASSWORD of at least 20 characters.")
+    if settings.auth_required and (not settings.supabase_url or not settings.supabase_publishable_key):
+        raise RuntimeError("Protected hosting requires SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY.")
     Base.metadata.create_all(bind=engine)
-    yield
+    with engine.begin() as connection:
+        columns = {column["name"] for column in inspect(connection).get_columns("screening_cases")}
+        if "owner_id" not in columns:
+            connection.execute(text("ALTER TABLE screening_cases ADD COLUMN owner_id VARCHAR(36)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_screening_cases_owner_id ON screening_cases (owner_id)"))
+    async with httpx.AsyncClient(timeout=8.0) as auth_client:
+        app.state.supabase_auth = auth_client
+        yield
 
 
 app = FastAPI(title=settings.app_name, version="0.1.0", description=f"{DISCLAIMER} No models or datasets ship with this research prototype.", lifespan=lifespan)
@@ -44,18 +49,40 @@ async def require_access_credentials(request, call_next):
     private_api = request.url.path.startswith("/api/") and request.url.path != "/api/health"
     if settings.auth_required and private_api:
         header = request.headers.get("authorization", "")
-        try:
-            scheme, encoded = header.split(" ", 1)
-            username, separator, password = base64.b64decode(encoded, validate=True).decode("utf-8").partition(":")
-        except (ValueError, UnicodeDecodeError, binascii.Error):
-            username, password, separator, scheme = "", "", "", ""
-        valid = (scheme.lower() == "basic" and bool(separator)
-                 and secrets.compare_digest(username, settings.access_username)
-                 and secrets.compare_digest(password, settings.access_password))
-        if not valid:
+        scheme, _, token = header.partition(" ")
+        if scheme.lower() != "bearer" or not token.strip():
             return JSONResponse({"detail": "Sign in is required to use this private research app."}, status_code=401,
-                                headers={"WWW-Authenticate": 'Basic realm="Clarity Research", charset="UTF-8"'})
+                                headers={"WWW-Authenticate": "Bearer"})
+        try:
+            response = await request.app.state.supabase_auth.get(
+                f"{settings.supabase_url.rstrip('/')}/auth/v1/user",
+                headers={"apikey": settings.supabase_publishable_key, "Authorization": f"Bearer {token.strip()}"},
+            )
+        except httpx.RequestError:
+            return JSONResponse({"detail": "The sign-in service is temporarily unavailable."}, status_code=503)
+        if response.status_code in (401, 403):
+            return JSONResponse({"detail": "Your session is invalid or expired. Please sign in again."}, status_code=401,
+                                headers={"WWW-Authenticate": "Bearer"})
+        if response.status_code != 200:
+            return JSONResponse({"detail": "The sign-in service is temporarily unavailable."}, status_code=503)
+        user_id = response.json().get("id")
+        if not isinstance(user_id, str):
+            return JSONResponse({"detail": "The sign-in service returned an invalid user."}, status_code=503)
+        request.state.user_id = user_id
     return await call_next(request)
+
+
+def current_user_id(request: Request) -> str:
+    user_id = getattr(request.state, "user_id", None)
+    if user_id:
+        return user_id
+    if settings.auth_required:
+        raise HTTPException(401, "Sign in is required.")
+    return "local-development"
+
+
+def owned_case(db: Session, case_id: str, owner_id: str):
+    return db.query(ScreeningCase).filter(ScreeningCase.id == case_id, ScreeningCase.owner_id == owner_id).first()
 
 
 @app.get("/api/health")
@@ -70,7 +97,7 @@ def models():
     return {"models": model_status(), "disclaimer": DISCLAIMER}
 
 
-async def run_screen(task: str, file: UploadFile, db: Session):
+async def run_screen(task: str, file: UploadFile, db: Session, owner_id: str):
     started = time.perf_counter()
     data = await file.read(settings.max_upload_bytes + 1)
     try:
@@ -96,7 +123,7 @@ async def run_screen(task: str, file: UploadFile, db: Session):
             label, score, confidence = "indeterminate", None, None
             abstain, reason, model_version = True, "inference_error", "inference-error"
     duration = round((time.perf_counter() - started) * 1000)
-    case = ScreeningCase(task=task, quality_status=checked.quality_status, quality_reasons=checked.reasons,
+    case = ScreeningCase(owner_id=owner_id, task=task, quality_status=checked.quality_status, quality_reasons=checked.reasons,
                          output_label=label, score=score, confidence=confidence, abstain=abstain,
                          abstention_reason=reason, duration_ms=duration, model_version=model_version,
                          preprocessing_version=PREPROCESSING_VERSION, review_status="pending", image_sha256=None)
@@ -118,19 +145,19 @@ async def run_screen(task: str, file: UploadFile, db: Session):
 
 
 @app.post("/api/screen/tb", response_model=ScreenResponse)
-async def screen_tb(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    return await run_screen("tb_screening", file, db)
+async def screen_tb(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    return await run_screen("tb_screening", file, db, current_user_id(request))
 
 
 @app.post("/api/screen/dr", response_model=ScreenResponse)
-async def screen_dr(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    return await run_screen("dr_grading", file, db)
+async def screen_dr(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    return await run_screen("dr_grading", file, db, current_user_id(request))
 
 
 @app.get("/api/cases", response_model=list[CaseSummary])
-def list_cases(task: str | None = None, review_status: str | None = None,
+def list_cases(request: Request, task: str | None = None, review_status: str | None = None,
                offset: int = Query(0, ge=0), limit: int = Query(25, ge=1, le=100), db: Session = Depends(get_db)):
-    query = db.query(ScreeningCase)
+    query = db.query(ScreeningCase).filter(ScreeningCase.owner_id == current_user_id(request))
     if task in TASKS:
         query = query.filter(ScreeningCase.task == task)
     if review_status:
@@ -141,8 +168,8 @@ def list_cases(task: str | None = None, review_status: str | None = None,
 
 
 @app.get("/api/cases/{case_id}")
-def get_case(case_id: str, db: Session = Depends(get_db)):
-    case = db.get(ScreeningCase, case_id)
+def get_case(case_id: str, request: Request, db: Session = Depends(get_db)):
+    case = owned_case(db, case_id, current_user_id(request))
     if not case:
         raise HTTPException(404, "Case not found.")
     return {"case_id": case.id, "task": case.task, "created_at": case.created_at, "quality": {"status": case.quality_status, "reasons": case.quality_reasons},
@@ -152,8 +179,8 @@ def get_case(case_id: str, db: Session = Depends(get_db)):
 
 
 @app.delete("/api/cases/{case_id}", status_code=204)
-def delete_case(case_id: str, db: Session = Depends(get_db)):
-    case = db.get(ScreeningCase, case_id)
+def delete_case(case_id: str, request: Request, db: Session = Depends(get_db)):
+    case = owned_case(db, case_id, current_user_id(request))
     if not case:
         raise HTTPException(404, "Case not found.")
     db.add(AuditRecord(case_id=case_id, action="delete", detail={"task": case.task}))
@@ -163,8 +190,8 @@ def delete_case(case_id: str, db: Session = Depends(get_db)):
 
 
 @app.post("/api/review/{case_id}")
-def review_case(case_id: str, payload: ReviewRequest, db: Session = Depends(get_db)):
-    case = db.get(ScreeningCase, case_id)
+def review_case(case_id: str, payload: ReviewRequest, request: Request, db: Session = Depends(get_db)):
+    case = owned_case(db, case_id, current_user_id(request))
     if not case:
         raise HTTPException(404, "Case not found.")
     case.review_status = payload.status
@@ -178,19 +205,19 @@ def review_case(case_id: str, payload: ReviewRequest, db: Session = Depends(get_
 
 
 @app.get("/api/metrics/summary")
-def metrics_summary(db: Session = Depends(get_db)):
-    total = db.query(func.count(ScreeningCase.id)).scalar() or 0
+def metrics_summary(request: Request, db: Session = Depends(get_db)):
+    total = db.query(func.count(ScreeningCase.id)).filter(ScreeningCase.owner_id == current_user_id(request)).scalar() or 0
     evaluations = db.query(EvaluationMetadata).all()
     return {"live_cases_count": total, "evaluation_records": [{"task": e.task, "model_version": e.model_version, "dataset_id": e.dataset_id, "metrics": e.metrics} for e in evaluations],
             "message": "No offline evaluation records are configured. Live case counts are operational counts, not model performance metrics.", "disclaimer": DISCLAIMER}
 
 
 @app.post("/api/export/report")
-def export_report(payload: dict, db: Session = Depends(get_db)):
+def export_report(payload: dict, request: Request, db: Session = Depends(get_db)):
     case_id = payload.get("case_id")
     if not isinstance(case_id, str):
         raise HTTPException(422, "case_id is required.")
-    case = db.get(ScreeningCase, case_id)
+    case = owned_case(db, case_id, current_user_id(request))
     if not case:
         raise HTTPException(404, "Case not found.")
     db.add(AuditRecord(case_id=case_id, action="export", detail={"format": "pdf"}))
