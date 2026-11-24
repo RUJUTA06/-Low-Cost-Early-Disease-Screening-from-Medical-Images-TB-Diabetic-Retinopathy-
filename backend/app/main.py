@@ -47,7 +47,7 @@ app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=Fals
 @app.middleware("http")
 async def require_access_credentials(request, call_next):
     private_api = request.url.path.startswith("/api/") and request.url.path != "/api/health"
-    if settings.auth_required and private_api:
+    if settings.auth_required and private_api and request.method != "OPTIONS":
         header = request.headers.get("authorization", "")
         scheme, _, token = header.partition(" ")
         if scheme.lower() != "bearer" or not token.strip():
