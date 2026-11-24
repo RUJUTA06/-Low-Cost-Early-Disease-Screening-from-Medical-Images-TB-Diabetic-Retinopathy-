@@ -14,6 +14,7 @@ def utcnow():
 class ScreeningCase(Base):
     __tablename__ = "screening_cases"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     task: Mapped[str] = mapped_column(String(32), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     quality_status: Mapped[str] = mapped_column(String(20))
