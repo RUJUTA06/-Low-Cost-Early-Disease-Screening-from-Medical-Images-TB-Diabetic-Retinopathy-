@@ -1,7 +1,9 @@
 import io
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
+from httpx import Response
 import numpy as np
 from PIL import Image
 
@@ -38,14 +40,24 @@ def test_health_and_model_status(client):
     assert all(not x["ready"] for x in models)
 
 
-def test_protected_host_requires_credentials_for_api_data(client, monkeypatch):
+def test_protected_api_requires_supabase_bearer_token(client, monkeypatch):
     from app.config import settings
     monkeypatch.setattr(settings, "auth_required", True)
-    monkeypatch.setattr(settings, "access_username", "researcher")
-    monkeypatch.setattr(settings, "access_password", "a-strong-test-password-123")
+    monkeypatch.setattr(settings, "supabase_url", "https://supabase.example")
+    monkeypatch.setattr(settings, "supabase_publishable_key", "test-publishable-key")
+    auth_get = AsyncMock(return_value=Response(200, json={"id": "test-user"}))
+    monkeypatch.setattr(client.app.state.supabase_auth, "get", auth_get)
     assert client.get("/api/health").status_code == 200
     assert client.get("/api/models").status_code == 401
-    assert client.get("/api/cases", auth=("researcher", "a-strong-test-password-123")).status_code == 200
+    assert client.get("/api/cases").status_code == 401
+    assert client.get("/api/cases", auth=("researcher", "not-a-bearer-token")).status_code == 401
+    response = client.get("/api/cases", headers={"Authorization": "Bearer valid-test-token"})
+    assert response.status_code == 200
+    assert response.json() == []
+    auth_get.assert_awaited_once_with(
+        "https://supabase.example/auth/v1/user",
+        headers={"apikey": "test-publishable-key", "Authorization": "Bearer valid-test-token"},
+    )
 
 
 @pytest.mark.parametrize(("path", "task"), [("/api/screen/tb", "tb_screening"), ("/api/screen/dr", "dr_grading")])
